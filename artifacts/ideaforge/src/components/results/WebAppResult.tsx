@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import JSZip from 'jszip';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Download, Send, Bot, User, Code2, Loader2, Sparkles } from 'lucide-react';
-import { useTweakGeneration, Generation } from '@workspace/api-client-react';
+import { useTweakGeneration, getGetGenerationQueryKey, Generation } from '@workspace/api-client-react';
+import { buildWebAppDownloadHtml, buildWebAppPreviewHtml } from '@/lib/utils';
 
 interface WebAppResultProps {
   generation: Generation;
@@ -15,7 +17,8 @@ export function WebAppResult({ generation }: WebAppResultProps) {
   const [chatMessage, setChatMessage] = useState('');
   const [isTweaking, setIsTweaking] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  
+
+  const queryClient = useQueryClient();
   const tweakGeneration = useTweakGeneration();
 
   const result = generation.result as any;
@@ -24,27 +27,10 @@ export function WebAppResult({ generation }: WebAppResultProps) {
   const js = result?.js || '';
   const title = result?.title || generation.title || 'webapp';
 
-  // Build the complete HTML string and convert to blob URL
   useEffect(() => {
     if (!html) return;
-    
-    const fullHtml = `
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>${css}</style>
-</head>
-<body>
-    ${html}
-    <script>${js}</script>
-</body>
-</html>
-    `;
 
+    const fullHtml = buildWebAppPreviewHtml(html, css, js, title);
     const blob = new Blob([fullHtml], { type: 'text/html' });
     const url = URL.createObjectURL(blob);
     setIframeUrl(url);
@@ -55,26 +41,12 @@ export function WebAppResult({ generation }: WebAppResultProps) {
   const handleDownload = async () => {
     try {
       const zip = new JSZip();
-      
-      zip.file('index.html', `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body>
-    ${html}
-    <script src="script.js"></script>
-</body>
-</html>`);
-      
-      zip.file('style.css', css);
-      zip.file('script.js', js);
+
+      zip.file('index.html', buildWebAppDownloadHtml(html, css, js, title));
+      if (css) zip.file('style.css', css);
+      if (js) zip.file('script.js', js);
       if (result?.readme) zip.file('README.md', result.readme);
-      
+
       const content = await zip.generateAsync({ type: 'blob' });
       const url = URL.createObjectURL(content);
       const a = document.createElement('a');
@@ -92,10 +64,11 @@ export function WebAppResult({ generation }: WebAppResultProps) {
   const handleTweak = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatMessage.trim() || isTweaking) return;
-    
+
     setIsTweaking(true);
     tweakGeneration.mutate({ id: generation.id, data: { message: chatMessage } }, {
-      onSuccess: () => {
+      onSuccess: (updatedGen) => {
+        queryClient.setQueryData(getGetGenerationQueryKey(generation.id), updatedGen);
         setChatMessage('');
         setIsTweaking(false);
       },
@@ -107,7 +80,6 @@ export function WebAppResult({ generation }: WebAppResultProps) {
 
   return (
     <div className="flex flex-col lg:flex-row h-full overflow-hidden bg-background">
-      {/* Left side: Web App Preview */}
       <div className="flex-1 flex flex-col min-w-0 border-r border-border">
         <div className="bg-muted/30 border-b px-4 py-3 flex justify-between items-center shrink-0">
           <div className="flex items-center gap-2">
@@ -119,7 +91,7 @@ export function WebAppResult({ generation }: WebAppResultProps) {
             <span className="hidden lg:inline">Download ZIP</span>
           </Button>
         </div>
-        
+
         <div className="flex-1 bg-white relative">
           {isTweaking && (
             <div className="absolute inset-0 bg-background/50 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
@@ -131,8 +103,8 @@ export function WebAppResult({ generation }: WebAppResultProps) {
             </div>
           )}
           {iframeUrl ? (
-            <iframe 
-              src={iframeUrl} 
+            <iframe
+              src={iframeUrl}
               className="w-full h-full border-none"
               title="Web App Preview"
               sandbox="allow-scripts"
@@ -145,13 +117,12 @@ export function WebAppResult({ generation }: WebAppResultProps) {
         </div>
       </div>
 
-      {/* Right side: Tweak Chat */}
       <div className="w-full lg:w-96 flex flex-col shrink-0 bg-muted/10 h-[400px] lg:h-auto">
         <div className="border-b px-4 py-3 shrink-0 flex items-center gap-2 bg-muted/30">
           <Sparkles className="w-4 h-4 text-primary" />
           <h3 className="font-bold text-sm font-display tracking-tight text-foreground">Tweak Generation</h3>
         </div>
-        
+
         <ScrollArea className="flex-1 p-4" ref={scrollRef}>
           <div className="space-y-6 pb-4">
             <div className="flex gap-3">
@@ -168,8 +139,7 @@ export function WebAppResult({ generation }: WebAppResultProps) {
                 </ul>
               </div>
             </div>
-            
-            {/* If there was a history of tweaks we would map them here. Since API doesn't seem to persist chat history as a list, we just show the prompt */}
+
             {isTweaking && (
                <div className="flex gap-3 flex-row-reverse">
                <div className="w-8 h-8 rounded-full bg-secondary flex items-center justify-center shrink-0 mt-1">
@@ -185,8 +155,8 @@ export function WebAppResult({ generation }: WebAppResultProps) {
 
         <div className="p-4 border-t bg-background shrink-0">
           <form onSubmit={handleTweak} className="flex gap-2">
-            <Input 
-              placeholder="e.g. Change the primary color to red..." 
+            <Input
+              placeholder="e.g. Change the primary color to red..."
               value={chatMessage}
               onChange={e => setChatMessage(e.target.value)}
               disabled={isTweaking}

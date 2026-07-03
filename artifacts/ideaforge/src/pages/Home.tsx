@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
 import { FileText, Presentation, BarChart3, Globe, Sparkles, Zap, ChevronRight } from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
 
 const OUTPUT_TYPES = [
   { id: 'doc', title: 'Document', icon: FileText, desc: 'A structured markdown document with sections and formatting.' },
@@ -46,7 +47,17 @@ export function Home() {
     createGeneration.mutate({ data: { idea, outputType } }, {
       onSuccess: (data) => {
         setLocation(`/generations/${data.id}`);
-      }
+      },
+      onError: (error) => {
+        const description = error instanceof Error
+          ? error.message
+          : 'Something went wrong. Please try again.';
+        toast({
+          variant: 'destructive',
+          title: 'Generation failed',
+          description,
+        });
+      },
     });
   };
 

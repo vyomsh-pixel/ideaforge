@@ -213,6 +213,7 @@ components:
         idea:
           type: string
           minLength: 10
+          maxLength: 5000
           description: The student's project idea description
         outputType:
           type: string
@@ -226,6 +227,7 @@ components:
         message:
           type: string
           minLength: 1
+          maxLength: 1000
           description: Natural-language instruction for tweaking the webapp
 
     GenerationStats:

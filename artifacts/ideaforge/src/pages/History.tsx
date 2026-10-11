@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { useLocation, Link } from 'wouter';
+import { useLocation } from 'wouter';
 import { useListGenerations, useGetGenerationStats, useDeleteGeneration, getListGenerationsQueryKey, getGetGenerationStatsQueryKey } from '@workspace/api-client-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
+import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { FileText, Presentation, BarChart3, Globe, Trash2, Calendar, LayoutGrid, Clock, ArrowRight } from 'lucide-react';
+import { FileText, Presentation, BarChart3, Globe, Trash2, Calendar, LayoutGrid, Clock, ArrowRight, AlertCircle } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
+import { toast } from '@/hooks/use-toast';
 
 const TYPE_ICONS = {
   doc: FileText,
@@ -31,9 +32,11 @@ export function History() {
   const deleteGeneration = useDeleteGeneration();
 
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const handleDelete = (e: React.MouseEvent, id: number) => {
+  const handleDelete = (e: React.MouseEvent | React.KeyboardEvent, id: number) => {
     e.stopPropagation();
+    setDeleteError(null);
     setDeletingId(id);
     deleteGeneration.mutate({ id }, {
       onSuccess: () => {
@@ -41,8 +44,15 @@ export function History() {
         queryClient.invalidateQueries({ queryKey: getGetGenerationStatsQueryKey() });
         setDeletingId(null);
       },
-      onError: () => {
+      onError: (err) => {
+        const message = err instanceof Error ? err.message : 'Failed to delete generation. Please try again.';
+        setDeleteError(message);
         setDeletingId(null);
+        toast({
+          variant: 'destructive',
+          title: 'Delete Failed',
+          description: message,
+        });
       }
     });
   };
@@ -54,6 +64,19 @@ export function History() {
           <h1 className="text-4xl font-display font-extrabold tracking-tight mb-2">History</h1>
           <p className="text-muted-foreground text-lg">Your past forged ideas and deliverables.</p>
         </div>
+
+        {deleteError && (
+          <div
+            role="alert"
+            className="bg-destructive/10 border border-destructive/30 text-destructive px-4 py-3 rounded-lg flex items-start gap-3 text-sm"
+          >
+            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="font-bold">Could Not Delete Deliverable</h4>
+              <p className="mt-0.5">{deleteError}</p>
+            </div>
+          </div>
+        )}
 
         {statsLoading ? (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -122,12 +145,21 @@ export function History() {
                 const Icon = TYPE_ICONS[gen.outputType] || FileText;
                 const isError = gen.status === 'error';
                 const isPending = ['pending', 'planning', 'generating'].includes(gen.status);
+                const openGeneration = () => setLocation(`/generations/${gen.id}`);
 
                 return (
                   <Card 
-                    key={gen.id} 
-                    className={`flex flex-col group cursor-pointer hover:shadow-md transition-all border-2 border-transparent hover:border-primary/20 ${isError ? 'opacity-75' : ''}`}
-                    onClick={() => setLocation(`/generations/${gen.id}`)}
+                    key={gen.id}
+                    role="button"
+                    tabIndex={0}
+                    className={`flex flex-col group cursor-pointer hover:shadow-md transition-all border-2 border-transparent hover:border-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${isError ? 'opacity-75' : ''}`}
+                    onClick={openGeneration}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        openGeneration();
+                      }
+                    }}
                   >
                     <CardHeader className="pb-2">
                       <div className="flex justify-between items-start mb-2">
@@ -136,9 +168,15 @@ export function History() {
                         </Badge>
                         <Button 
                           variant="ghost" 
-                          size="icon" 
-                          className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                          size="icon"
+                          aria-label={`Delete ${gen.title || 'deliverable'}`}
+                          className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity"
                           onClick={(e) => handleDelete(e, gen.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.stopPropagation();
+                            }
+                          }}
                           disabled={deletingId === gen.id}
                         >
                           <Trash2 className="w-4 h-4" />

@@ -1,16 +1,24 @@
-import React from 'react';
+import React, { Suspense, lazy } from 'react';
 import { useLocation, useParams } from 'wouter';
 import { useGetGeneration, getGetGenerationQueryKey } from '@workspace/api-client-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { FileText, Presentation, BarChart3, Globe, Clock, ArrowLeft, Download, AlertCircle } from 'lucide-react';
+import { FileText, Presentation, BarChart3, Globe, Clock, ArrowLeft, AlertCircle } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
-import { DocResult } from '@/components/results/DocResult';
-import { PptResult } from '@/components/results/PptResult';
-import { ChartsResult } from '@/components/results/ChartsResult';
-import { WebAppResult } from '@/components/results/WebAppResult';
+const DocResult = lazy(() =>
+  import('@/components/results/DocResult').then((m) => ({ default: m.DocResult }))
+);
+const PptResult = lazy(() =>
+  import('@/components/results/PptResult').then((m) => ({ default: m.PptResult }))
+);
+const ChartsResult = lazy(() =>
+  import('@/components/results/ChartsResult').then((m) => ({ default: m.ChartsResult }))
+);
+const WebAppResult = lazy(() =>
+  import('@/components/results/WebAppResult').then((m) => ({ default: m.WebAppResult }))
+);
 
 const TYPE_ICONS = {
   doc: FileText,
@@ -113,7 +121,7 @@ export function Result() {
         </div>
         
         {hasFailed && gen.errorMessage && (
-          <div className="bg-destructive/10 border border-destructive/20 text-destructive px-4 py-3 rounded-lg flex items-start gap-3 max-w-3xl">
+          <div className="bg-destructive/10 border border-destructive/20 text-destructive px-4 py-3 rounded-lg flex items-start gap-3 max-w-3xl" role="alert">
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
             <div>
               <h4 className="font-bold">Generation Failed</h4>
@@ -125,12 +133,19 @@ export function Result() {
 
       <div className="flex-1 w-full bg-card border shadow-sm rounded-xl overflow-hidden relative flex flex-col">
         {!isPending && !hasFailed && gen.result ? (
-          <>
+          <Suspense
+            fallback={
+              <div className="flex-1 flex flex-col items-center justify-center p-12 space-y-4 min-h-[400px]">
+                <Skeleton className="h-8 w-48" />
+                <Skeleton className="h-64 w-full max-w-3xl rounded-xl" />
+              </div>
+            }
+          >
             {gen.outputType === 'doc' && <DocResult result={gen.result} />}
             {gen.outputType === 'ppt' && <PptResult result={gen.result} />}
             {gen.outputType === 'charts' && <ChartsResult result={gen.result} />}
             {gen.outputType === 'webapp' && <WebAppResult generation={gen} />}
-          </>
+          </Suspense>
         ) : isPending ? (
           <div className="flex-1 flex flex-col items-center justify-center p-12 text-center min-h-[400px]">
              <div className="relative mb-6">

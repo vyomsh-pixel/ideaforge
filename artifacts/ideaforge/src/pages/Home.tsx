@@ -4,7 +4,7 @@ import { useCreateGeneration, GenerationInputOutputType } from '@workspace/api-c
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Card } from '@/components/ui/card';
-import { FileText, Presentation, BarChart3, Globe, Sparkles, Zap, ChevronRight } from 'lucide-react';
+import { FileText, Presentation, BarChart3, Globe, Sparkles, Zap, ChevronRight, AlertCircle } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
 
 const OUTPUT_TYPES = [
@@ -27,6 +27,7 @@ export function Home() {
   const [, setLocation] = useLocation();
   const [idea, setIdea] = useState('');
   const [outputType, setOutputType] = useState<typeof OUTPUT_TYPES[number]['id']>('doc');
+  const [errorAlert, setErrorAlert] = useState<string | null>(null);
   
   const createGeneration = useCreateGeneration();
   
@@ -42,7 +43,7 @@ export function Home() {
 
   const handleGenerate = () => {
     if (idea.trim().length < 10) return;
-    
+    setErrorAlert(null);
     setLoadingStep(0);
     createGeneration.mutate({ data: { idea, outputType } }, {
       onSuccess: (data) => {
@@ -52,6 +53,7 @@ export function Home() {
         const description = error instanceof Error
           ? error.message
           : 'Something went wrong. Please try again.';
+        setErrorAlert(description);
         toast({
           variant: 'destructive',
           title: 'Generation failed',
@@ -63,7 +65,7 @@ export function Home() {
 
   if (createGeneration.isPending) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-6 bg-secondary/30">
+      <div className="flex-1 flex flex-col items-center justify-center p-6 bg-secondary/30" role="status" aria-live="polite">
         <div className="max-w-md w-full flex flex-col items-center text-center space-y-8">
           <div className="relative">
             <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full animate-pulse" />
@@ -99,12 +101,26 @@ export function Home() {
         </div>
 
         <div className="space-y-8 max-w-3xl mx-auto w-full">
+          {errorAlert && (
+            <div
+              role="alert"
+              className="bg-destructive/10 border border-destructive/30 text-destructive px-4 py-3 rounded-lg flex items-start gap-3 text-sm"
+            >
+              <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+              <div>
+                <h4 className="font-bold">Could Not Forge Deliverable</h4>
+                <p className="mt-0.5">{errorAlert}</p>
+              </div>
+            </div>
+          )}
+
           <div className="space-y-3">
-            <label className="text-sm font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+            <label htmlFor="raw-idea-input" className="text-sm font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
               <Zap className="w-4 h-4 text-accent" />
               1. The Raw Idea
             </label>
             <Textarea
+              id="raw-idea-input"
               className="min-h-[200px] text-lg p-6 font-sans resize-y shadow-sm font-medium border-2 focus-visible:border-primary focus-visible:ring-0"
               placeholder="e.g. A marketplace where students can trade leftover dining hall meal swipes. Need an app prototype..."
               value={idea}
@@ -117,15 +133,25 @@ export function Home() {
               <Sparkles className="w-4 h-4 text-primary" />
               2. The Deliverable
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4" role="group" aria-label="Select deliverable type">
               {OUTPUT_TYPES.map(type => {
                 const Icon = type.icon;
                 const isSelected = outputType === type.id;
+                const selectType = () => setOutputType(type.id as GenerationInputOutputType);
                 return (
                   <Card 
                     key={type.id}
-                    className={`p-5 cursor-pointer transition-all duration-200 border-2 ${isSelected ? 'border-primary shadow-md bg-primary/5' : 'hover:border-primary/40 hover:bg-muted/50'}`}
-                    onClick={() => setOutputType(type.id as GenerationInputOutputType)}
+                    role="button"
+                    tabIndex={0}
+                    aria-pressed={isSelected}
+                    className={`p-5 cursor-pointer transition-all duration-200 border-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${isSelected ? 'border-primary shadow-md bg-primary/5' : 'hover:border-primary/40 hover:bg-muted/50'}`}
+                    onClick={selectType}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        selectType();
+                      }
+                    }}
                   >
                     <div className="flex items-start gap-4">
                       <div className={`p-3 rounded-lg ${isSelected ? 'bg-primary text-primary-foreground' : 'bg-secondary text-secondary-foreground'}`}>

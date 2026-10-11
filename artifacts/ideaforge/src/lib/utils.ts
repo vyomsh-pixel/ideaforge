@@ -10,6 +10,15 @@ export function isFullHtmlDocument(html: string): boolean {
   return /<!DOCTYPE\s+html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)
 }
 
+export function escapeHtml(value: string): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+}
+
 export function buildWebAppPreviewHtml(
   html: string,
   css: string,
@@ -17,8 +26,27 @@ export function buildWebAppPreviewHtml(
   title: string,
 ): string {
   const trimmedHtml = html.trim()
+  const safeTitle = escapeHtml(title)
+
   if (isFullHtmlDocument(trimmedHtml)) {
-    return trimmedHtml
+    let doc = trimmedHtml
+    if (css.trim()) {
+      const styleTag = `<style>${css}</style>`
+      if (/<\/head>/i.test(doc)) {
+        doc = doc.replace(/<\/head>/i, `${styleTag}\n</head>`)
+      } else {
+        doc = `${styleTag}\n${doc}`
+      }
+    }
+    if (js.trim()) {
+      const scriptTag = `<script>${js}</script>`
+      if (/<\/body>/i.test(doc)) {
+        doc = doc.replace(/<\/body>/i, `${scriptTag}\n</body>`)
+      } else {
+        doc = `${doc}\n${scriptTag}`
+      }
+    }
+    return doc
   }
 
   return `<!DOCTYPE html>
@@ -26,7 +54,7 @@ export function buildWebAppPreviewHtml(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
+    <title>${safeTitle}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>${css}</style>
 </head>
@@ -44,8 +72,27 @@ export function buildWebAppDownloadHtml(
   title: string,
 ): string {
   const trimmedHtml = html.trim()
+  const safeTitle = escapeHtml(title)
+
   if (isFullHtmlDocument(trimmedHtml)) {
-    return trimmedHtml
+    let doc = trimmedHtml
+    if (css.trim() && !/href=["'](?:\.\/)?style\.css["']/i.test(doc)) {
+      const linkTag = `<link rel="stylesheet" href="style.css">`
+      if (/<\/head>/i.test(doc)) {
+        doc = doc.replace(/<\/head>/i, `${linkTag}\n</head>`)
+      } else {
+        doc = `${linkTag}\n${doc}`
+      }
+    }
+    if (js.trim() && !/src=["'](?:\.\/)?script\.js["']/i.test(doc)) {
+      const scriptTag = `<script src="script.js"></script>`
+      if (/<\/body>/i.test(doc)) {
+        doc = doc.replace(/<\/body>/i, `${scriptTag}\n</body>`)
+      } else {
+        doc = `${doc}\n${scriptTag}`
+      }
+    }
+    return doc
   }
 
   return `<!DOCTYPE html>
@@ -53,13 +100,13 @@ export function buildWebAppDownloadHtml(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
+    <title>${safeTitle}</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="style.css">
+    ${css.trim() ? '<link rel="stylesheet" href="style.css">' : ''}
 </head>
 <body>
     ${trimmedHtml}
-    <script src="script.js"></script>
+    ${js.trim() ? '<script src="script.js"></script>' : ''}
 </body>
 </html>`
 }

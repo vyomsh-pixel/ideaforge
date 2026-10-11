@@ -22,11 +22,10 @@ export const HealthCheckResponse = zod.object({
  * @summary Create a new project generation
  */
 export const createGenerationBodyIdeaMin = 10;
-
-
+export const createGenerationBodyIdeaMax = 5000;
 
 export const CreateGenerationBody = zod.object({
-  "idea": zod.string().min(createGenerationBodyIdeaMin).describe('The student\'s project idea description'),
+  "idea": zod.string().min(createGenerationBodyIdeaMin).max(createGenerationBodyIdeaMax).describe('The student\'s project idea description'),
   "outputType": zod.enum(['doc', 'ppt', 'charts', 'webapp']).describe('The type of output to generate')
 })
 
@@ -121,8 +120,10 @@ export const TweakGenerationParams = zod.object({
 
 
 
+export const tweakGenerationBodyMessageMax = 1000;
+
 export const TweakGenerationBody = zod.object({
-  "message": zod.string().min(1).describe('Natural-language instruction for tweaking the webapp')
+  "message": zod.string().min(1).max(tweakGenerationBodyMessageMax).describe('Natural-language instruction for tweaking the webapp')
 })
 
 export const TweakGenerationResponse = zod.object({

@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq, desc, sql } from "drizzle-orm";
-import { db, generationsTable } from "@workspace/db";
+import { db, generationsTable, isDbConfigured } from "@workspace/db";
 import {
   CreateGenerationBody,
   GetGenerationParams,
@@ -9,12 +9,46 @@ import {
   TweakGenerationBody,
 } from "@workspace/api-zod";
 import { runGenerationPipeline, tweakWebapp } from "../../lib/ai/pipeline.js";
-import { logger } from "../../lib/logger.js";
 
 const router: IRouter = Router();
 
+export const MAX_IDEA_LENGTH = 5000;
+export const MAX_MESSAGE_LENGTH = 1000;
+
+interface GenerationRow {
+  id: number;
+  outputType: string;
+  status: string;
+  idea: string;
+  title: string | null;
+  plan: unknown;
+  result: unknown;
+  errorMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const fallbackStore: GenerationRow[] = [];
+let nextFallbackId = 1;
+
+export function getFallbackGenerations() {
+  return fallbackStore.map(toResponse);
+}
+
+export function clearFallbackGenerations() {
+  fallbackStore.length = 0;
+}
+
 // POST /generations — create + run pipeline synchronously
 router.post("/generations", async (req, res): Promise<void> => {
+  const rawIdea = req.body?.idea;
+  if (typeof rawIdea === "string" && rawIdea.length > MAX_IDEA_LENGTH) {
+    res
+      .status(400)
+      .json({ error: `Idea must be ${MAX_IDEA_LENGTH} characters or fewer` });
+    return;
+  }
+
   const parsed = CreateGenerationBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -22,12 +56,66 @@ router.post("/generations", async (req, res): Promise<void> => {
   }
 
   const { idea, outputType } = parsed.data;
+  if (idea.length > MAX_IDEA_LENGTH) {
+    res
+      .status(400)
+      .json({ error: `Idea must be ${MAX_IDEA_LENGTH} characters or fewer` });
+    return;
+  }
 
-  // Insert with pending status
-  const [gen] = await db
-    .insert(generationsTable)
-    .values({ idea, outputType, status: "pending" })
-    .returning();
+  // Fallback in-memory mode when DB is not configured in local dev
+  if (!isDbConfigured) {
+    const now = new Date();
+    const memGen: GenerationRow = {
+      id: nextFallbackId++,
+      outputType,
+      status: "pending",
+      idea,
+      title: null,
+      plan: null,
+      result: null,
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    fallbackStore.unshift(memGen);
+
+    try {
+      const { title, plan, result } = await runGenerationPipeline(
+        idea,
+        outputType as "doc" | "ppt" | "charts" | "webapp",
+        async (status) => {
+          memGen.status = status;
+          memGen.updatedAt = new Date();
+        },
+      );
+      memGen.status = "done";
+      memGen.title = title;
+      memGen.plan = plan;
+      memGen.result = result;
+      memGen.updatedAt = new Date();
+      res.status(201).json(toResponse(memGen));
+    } catch (err) {
+      req.log.error({ err }, "Generation pipeline failed");
+      memGen.status = "error";
+      memGen.errorMessage = "Generation failed";
+      memGen.updatedAt = new Date();
+      res.status(500).json({ error: "Generation failed. Please try again." });
+    }
+    return;
+  }
+
+  let gen: typeof generationsTable.$inferSelect;
+  try {
+    [gen] = await db
+      .insert(generationsTable)
+      .values({ idea, outputType, status: "pending" })
+      .returning();
+  } catch (dbErr) {
+    req.log.error({ err: dbErr }, "Failed to insert generation record");
+    res.status(500).json({ error: "Failed to initialize generation" });
+    return;
+  }
 
   try {
     // Run two-stage AI pipeline with live status updates
@@ -58,61 +146,103 @@ router.post("/generations", async (req, res): Promise<void> => {
     res.status(201).json(toResponse(done));
   } catch (err) {
     req.log.error({ err }, "Generation pipeline failed");
-    const [failed] = await db
-      .update(generationsTable)
-      .set({
-        status: "error",
-        errorMessage: err instanceof Error ? err.message : String(err),
-        updatedAt: new Date(),
-      })
-      .where(eq(generationsTable.id, gen.id))
-      .returning();
+    try {
+      await db
+        .update(generationsTable)
+        .set({
+          status: "error",
+          errorMessage: "Generation pipeline failed",
+          updatedAt: new Date(),
+        })
+        .where(eq(generationsTable.id, gen.id));
+    } catch (updateErr) {
+      req.log.error({ err: updateErr }, "Failed to record generation error status");
+    }
 
-    res.status(500).json({ error: failed.errorMessage ?? "Generation failed" });
+    res.status(500).json({ error: "Generation failed. Please try again." });
   }
 });
 
 // GET /generations — list recent 20
-router.get("/generations", async (_req, res): Promise<void> => {
-  const gens = await db
-    .select()
-    .from(generationsTable)
-    .orderBy(desc(generationsTable.createdAt))
-    .limit(20);
+router.get("/generations", async (req, res): Promise<void> => {
+  if (!isDbConfigured) {
+    res.json(fallbackStore.slice(0, 20).map(toResponse));
+    return;
+  }
 
-  res.json(gens.map(toResponse));
+  try {
+    const gens = await db
+      .select()
+      .from(generationsTable)
+      .orderBy(desc(generationsTable.createdAt))
+      .limit(20);
+
+    res.json(gens.map(toResponse));
+  } catch (err) {
+    req.log.error({ err }, "Failed to list generations");
+    res.json(fallbackStore.slice(0, 20).map(toResponse));
+  }
 });
 
 // GET /generations/stats
-router.get("/generations/stats", async (_req, res): Promise<void> => {
-  const [total] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(generationsTable);
+router.get("/generations/stats", async (req, res): Promise<void> => {
+  const byType = { doc: 0, ppt: 0, charts: 0, webapp: 0 } as Record<
+    string,
+    number
+  >;
 
-  const byTypeRows = await db
-    .select({
-      outputType: generationsTable.outputType,
-      count: sql<number>`count(*)::int`,
-    })
-    .from(generationsTable)
-    .where(eq(generationsTable.status, "done"))
-    .groupBy(generationsTable.outputType);
-
-  const byType = { doc: 0, ppt: 0, charts: 0, webapp: 0 } as Record<string, number>;
-  for (const row of byTypeRows) {
-    byType[row.outputType] = row.count;
+  if (!isDbConfigured) {
+    const doneRows = fallbackStore.filter((g) => g.status === "done");
+    for (const row of doneRows) {
+      byType[row.outputType] = (byType[row.outputType] ?? 0) + 1;
+    }
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const recentCount = doneRows.filter(
+      (g) => g.createdAt.getTime() > cutoff,
+    ).length;
+    res.json({
+      total: doneRows.length,
+      byType,
+      recentCount,
+    });
+    return;
   }
 
-  const [recent] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(generationsTable)
-    .where(sql`created_at > now() - interval '24 hours'`);
+  try {
+    const [[total], byTypeRows, [recent]] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(generationsTable)
+        .where(eq(generationsTable.status, "done")),
+      db
+        .select({
+          outputType: generationsTable.outputType,
+          count: sql<number>`count(*)::int`,
+        })
+        .from(generationsTable)
+        .where(eq(generationsTable.status, "done"))
+        .groupBy(generationsTable.outputType),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(generationsTable)
+        .where(
+          sql`${generationsTable.status} = 'done' AND ${generationsTable.createdAt} > now() - interval '24 hours'`,
+        ),
+    ]);
 
-  res.json({
-    total: total?.count ?? 0,
-    byType,
-    recentCount: recent?.count ?? 0,
-  });
+    for (const row of byTypeRows) {
+      byType[row.outputType] = row.count;
+    }
+
+    res.json({
+      total: total?.count ?? 0,
+      byType,
+      recentCount: recent?.count ?? 0,
+    });
+  } catch (err) {
+    req.log.error({ err }, "Failed to fetch generation stats");
+    res.json({ total: 0, byType, recentCount: 0 });
+  }
 });
 
 // GET /generations/:id
@@ -123,17 +253,32 @@ router.get("/generations/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const [gen] = await db
-    .select()
-    .from(generationsTable)
-    .where(eq(generationsTable.id, params.data.id));
-
-  if (!gen) {
-    res.status(404).json({ error: "Generation not found" });
+  if (!isDbConfigured) {
+    const found = fallbackStore.find((g) => g.id === params.data.id);
+    if (!found) {
+      res.status(404).json({ error: "Generation not found" });
+      return;
+    }
+    res.json(toResponse(found));
     return;
   }
 
-  res.json(toResponse(gen));
+  try {
+    const [gen] = await db
+      .select()
+      .from(generationsTable)
+      .where(eq(generationsTable.id, params.data.id));
+
+    if (!gen) {
+      res.status(404).json({ error: "Generation not found" });
+      return;
+    }
+
+    res.json(toResponse(gen));
+  } catch (err) {
+    req.log.error({ err }, "Failed to fetch generation");
+    res.status(500).json({ error: "Failed to load generation" });
+  }
 });
 
 // DELETE /generations/:id
@@ -144,17 +289,33 @@ router.delete("/generations/:id", async (req, res): Promise<void> => {
     return;
   }
 
-  const [deleted] = await db
-    .delete(generationsTable)
-    .where(eq(generationsTable.id, params.data.id))
-    .returning();
-
-  if (!deleted) {
-    res.status(404).json({ error: "Generation not found" });
+  if (!isDbConfigured) {
+    const idx = fallbackStore.findIndex((g) => g.id === params.data.id);
+    if (idx === -1) {
+      res.status(404).json({ error: "Generation not found" });
+      return;
+    }
+    fallbackStore.splice(idx, 1);
+    res.sendStatus(204);
     return;
   }
 
-  res.sendStatus(204);
+  try {
+    const [deleted] = await db
+      .delete(generationsTable)
+      .where(eq(generationsTable.id, params.data.id))
+      .returning();
+
+    if (!deleted) {
+      res.status(404).json({ error: "Generation not found" });
+      return;
+    }
+
+    res.sendStatus(204);
+  } catch (err) {
+    req.log.error({ err }, "Failed to delete generation");
+    res.status(500).json({ error: "Failed to delete generation" });
+  }
 });
 
 // POST /generations/:id/tweak
@@ -165,16 +326,76 @@ router.post("/generations/:id/tweak", async (req, res): Promise<void> => {
     return;
   }
 
+  const rawMessage = req.body?.message;
+  if (
+    typeof rawMessage === "string" &&
+    rawMessage.length > MAX_MESSAGE_LENGTH
+  ) {
+    res.status(400).json({
+      error: `Tweak message must be ${MAX_MESSAGE_LENGTH} characters or fewer`,
+    });
+    return;
+  }
+
   const body = TweakGenerationBody.safeParse(req.body);
   if (!body.success) {
     res.status(400).json({ error: body.error.message });
     return;
   }
 
-  const [gen] = await db
-    .select()
-    .from(generationsTable)
-    .where(eq(generationsTable.id, params.data.id));
+  const { message } = body.data;
+  if (message.length > MAX_MESSAGE_LENGTH) {
+    res.status(400).json({
+      error: `Tweak message must be ${MAX_MESSAGE_LENGTH} characters or fewer`,
+    });
+    return;
+  }
+
+  if (!isDbConfigured) {
+    const memGen = fallbackStore.find((g) => g.id === params.data.id);
+    if (!memGen) {
+      res.status(404).json({ error: "Generation not found" });
+      return;
+    }
+    if (memGen.outputType !== "webapp") {
+      res
+        .status(400)
+        .json({ error: "Tweaking is only supported for webapp generations" });
+      return;
+    }
+    if (memGen.status !== "done" || !memGen.result) {
+      res.status(400).json({ error: "Generation is not complete yet" });
+      return;
+    }
+    try {
+      const currentResult = memGen.result as {
+        title?: string;
+        html?: string;
+        css?: string;
+        js?: string;
+        readme?: string;
+      };
+      memGen.result = await tweakWebapp(currentResult, message);
+      memGen.updatedAt = new Date();
+      res.json(toResponse(memGen));
+    } catch (err) {
+      req.log.error({ err }, "Tweak failed");
+      res.status(500).json({ error: "Failed to apply tweak" });
+    }
+    return;
+  }
+
+  let gen: typeof generationsTable.$inferSelect | undefined;
+  try {
+    [gen] = await db
+      .select()
+      .from(generationsTable)
+      .where(eq(generationsTable.id, params.data.id));
+  } catch (err) {
+    req.log.error({ err }, "Failed to fetch generation for tweak");
+    res.status(500).json({ error: "Failed to load generation" });
+    return;
+  }
 
   if (!gen) {
     res.status(404).json({ error: "Generation not found" });
@@ -182,7 +403,9 @@ router.post("/generations/:id/tweak", async (req, res): Promise<void> => {
   }
 
   if (gen.outputType !== "webapp") {
-    res.status(400).json({ error: "Tweaking is only supported for webapp generations" });
+    res
+      .status(400)
+      .json({ error: "Tweaking is only supported for webapp generations" });
     return;
   }
 
@@ -191,8 +414,13 @@ router.post("/generations/:id/tweak", async (req, res): Promise<void> => {
     return;
   }
 
-  const { message } = body.data;
-  const currentResult = gen.result as { title?: string; html?: string; css?: string; js?: string; readme?: string };
+  const currentResult = gen.result as {
+    title?: string;
+    html?: string;
+    css?: string;
+    js?: string;
+    readme?: string;
+  };
 
   try {
     const updatedResult = await tweakWebapp(currentResult, message);
@@ -209,11 +437,11 @@ router.post("/generations/:id/tweak", async (req, res): Promise<void> => {
     res.json(toResponse(updated));
   } catch (err) {
     req.log.error({ err }, "Tweak failed");
-    res.status(500).json({ error: err instanceof Error ? err.message : "Tweak failed" });
+    res.status(500).json({ error: "Failed to apply tweak" });
   }
 });
 
-function toResponse(gen: typeof generationsTable.$inferSelect) {
+function toResponse(gen: GenerationRow) {
   return {
     id: gen.id,
     outputType: gen.outputType,

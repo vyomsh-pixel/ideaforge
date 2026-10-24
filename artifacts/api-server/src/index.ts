@@ -20,7 +20,7 @@ export {
 } from "./routes/generations/index.js";
 export { CreateGenerationBody, TweakGenerationBody } from "@workspace/api-zod";
 
-if (process.env.NODE_ENV !== "test") {
+if (process.env.NODE_ENV !== "test" && !process.env.VERCEL) {
   const rawPort = process.env["PORT"] || "3000";
   const port = Number(rawPort);
 

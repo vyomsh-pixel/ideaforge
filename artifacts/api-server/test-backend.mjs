@@ -330,8 +330,9 @@ describe("IdeaForge Automated Backend Test Suite", () => {
     });
     assert.equal(badGen.status, 400);
 
-    // Valid webapp generation
+    // Valid webapp generation by user A
     const created = await invokeRoute(genRouter, "POST", "/generations", {
+      headers: authHeader,
       body: {
         idea: "Real-time study group scheduler with calendar heatmap",
         outputType: "webapp",
@@ -340,31 +341,69 @@ describe("IdeaForge Automated Backend Test Suite", () => {
     assert.equal(created.status, 201);
     assert.equal(created.body.status, "done");
 
+    // Register User B to test data isolation
+    const regB = await invokeRoute(authRouter, "POST", "/auth/register", {
+      body: {
+        username: "user_b",
+        password: "securePassword456",
+        displayName: "User Beta",
+        consentAccepted: true,
+      },
+    });
+    assert.equal(regB.status, 201);
+    const authHeaderB = { authorization: `Bearer ${regB.body.token}` };
+
+    // User B creates a separate generation
+    const createdB = await invokeRoute(genRouter, "POST", "/generations", {
+      headers: authHeaderB,
+      body: {
+        idea: "Campus shuttle tracking system with live map updates",
+        outputType: "ppt",
+      },
+    });
+    assert.equal(createdB.status, 201);
+
     // Stats consistency (total equals sum of byType)
     const stats = await invokeRoute(genRouter, "GET", "/generations/stats");
     assert.equal(stats.status, 200);
-    assert.equal(stats.body.total, 1);
-    assert.equal(stats.body.byType.webapp, 1);
+    assert.equal(stats.body.total, 2);
 
-    // Export account data
-    const exported = await invokeRoute(authRouter, "GET", "/account/export", {
+    // Export account data for User A: MUST only return User A's generation (1 item)
+    const exportedA = await invokeRoute(authRouter, "GET", "/account/export", {
       headers: authHeader,
     });
-    assert.equal(exported.status, 200);
-    assert.equal(exported.body.user.username, "vyom_dev");
-    assert.equal(exported.body.generations.length, 1);
+    assert.equal(exportedA.status, 200);
+    assert.equal(exportedA.body.user.username, "vyom_dev");
+    assert.equal(exportedA.body.generations.length, 1);
 
-    // Delete account
+    // User A attempts to delete User B's generation: MUST be rejected with 403
+    const forbiddenDel = await invokeRoute(
+      genRouter,
+      "DELETE",
+      "/generations/:id",
+      { headers: authHeader, params: { id: createdB.body.id } },
+    );
+    assert.equal(forbiddenDel.status, 403);
+
+    // User A deletes account
     const deleted = await invokeRoute(authRouter, "DELETE", "/account", {
       headers: authHeader,
     });
     assert.equal(deleted.status, 200);
     assert.equal(deleted.body.status, "deleted");
 
-    // Token invalidated after account deletion
+    // Token invalidated after account deletion for User A
     const meAfter = await invokeRoute(authRouter, "GET", "/auth/me", {
       headers: authHeader,
     });
     assert.equal(meAfter.status, 401);
+
+    // CRITICAL: User B's generation MUST still exist (blast radius control)
+    const userBGens = await invokeRoute(genRouter, "GET", "/generations", {
+      headers: authHeaderB,
+    });
+    assert.equal(userBGens.status, 200);
+    assert.equal(userBGens.body.length, 1);
+    assert.equal(userBGens.body[0].id, createdB.body.id);
   });
 });

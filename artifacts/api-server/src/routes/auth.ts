@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request } from "express";
 import crypto from "node:crypto";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db, generationsTable, isDbConfigured } from "@workspace/db";
 import {
   getFallbackGenerations,
@@ -136,7 +136,7 @@ function toPublicUser(user: UserRecord): PublicUser {
   };
 }
 
-function getAuthenticatedUser(req: Request): PublicUser | null {
+export function getAuthenticatedUser(req: Request): PublicUser | null {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return null;
@@ -259,6 +259,7 @@ router.get("/account/export", async (req, res): Promise<void> => {
       const rows = await db
         .select()
         .from(generationsTable)
+        .where(eq(generationsTable.userId, user.id))
         .orderBy(desc(generationsTable.createdAt))
         .limit(100);
       generations = rows.map((gen) => ({
@@ -274,10 +275,10 @@ router.get("/account/export", async (req, res): Promise<void> => {
         updatedAt: gen.updatedAt.toISOString(),
       }));
     } catch {
-      generations = getFallbackGenerations();
+      generations = getFallbackGenerations(user.id);
     }
   } else {
-    generations = getFallbackGenerations();
+    generations = getFallbackGenerations(user.id);
   }
 
   res.setHeader(
@@ -302,11 +303,13 @@ router.delete("/account", async (req, res): Promise<void> => {
   deletedUserIds.add(user.id);
   usersById.delete(user.id);
   usersByUsername.delete(user.username.toLowerCase());
-  clearFallbackGenerations();
+  clearFallbackGenerations(user.id);
 
   if (isDbConfigured) {
     try {
-      await db.delete(generationsTable);
+      await db
+        .delete(generationsTable)
+        .where(eq(generationsTable.userId, user.id));
     } catch {
       // Ignore DB offline error during local dev account deletion
     }

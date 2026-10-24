@@ -1,9 +1,10 @@
-import { pgTable, serial, text, jsonb, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, jsonb, timestamp, integer } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
 export const generationsTable = pgTable("generations", {
   id: serial("id").primaryKey(),
+  userId: integer("user_id"),
   outputType: text("output_type").notNull(),
   status: text("status").notNull().default("pending"),
   idea: text("idea").notNull(),

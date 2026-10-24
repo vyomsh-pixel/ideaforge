@@ -9,6 +9,7 @@ import {
   TweakGenerationBody,
 } from "@workspace/api-zod";
 import { runGenerationPipeline, tweakWebapp } from "../../lib/ai/pipeline.js";
+import { getAuthenticatedUser } from "../auth.js";
 
 const router: IRouter = Router();
 
@@ -17,6 +18,7 @@ export const MAX_MESSAGE_LENGTH = 1000;
 
 interface GenerationRow {
   id: number;
+  userId?: number | null;
   outputType: string;
   status: string;
   idea: string;
@@ -31,11 +33,22 @@ interface GenerationRow {
 const fallbackStore: GenerationRow[] = [];
 let nextFallbackId = 1;
 
-export function getFallbackGenerations() {
+export function getFallbackGenerations(userId?: number | null) {
+  if (userId != null) {
+    return fallbackStore
+      .filter((g) => g.userId === userId || g.userId == null)
+      .map(toResponse);
+  }
   return fallbackStore.map(toResponse);
 }
 
-export function clearFallbackGenerations() {
+export function clearFallbackGenerations(userId?: number | null) {
+  if (userId != null) {
+    const remaining = fallbackStore.filter((g) => g.userId !== userId);
+    fallbackStore.length = 0;
+    fallbackStore.push(...remaining);
+    return;
+  }
   fallbackStore.length = 0;
 }
 
@@ -63,11 +76,15 @@ router.post("/generations", async (req, res): Promise<void> => {
     return;
   }
 
+  const user = getAuthenticatedUser(req);
+  const userId = user ? user.id : null;
+
   // Fallback in-memory mode when DB is not configured in local dev
   if (!isDbConfigured) {
     const now = new Date();
     const memGen: GenerationRow = {
       id: nextFallbackId++,
+      userId,
       outputType,
       status: "pending",
       idea,
@@ -109,7 +126,7 @@ router.post("/generations", async (req, res): Promise<void> => {
   try {
     [gen] = await db
       .insert(generationsTable)
-      .values({ idea, outputType, status: "pending" })
+      .values({ idea, outputType, status: "pending", userId })
       .returning();
   } catch (dbErr) {
     req.log.error({ err: dbErr }, "Failed to insert generation record");
@@ -165,17 +182,28 @@ router.post("/generations", async (req, res): Promise<void> => {
 
 // GET /generations — list recent 20
 router.get("/generations", async (req, res): Promise<void> => {
+  const user = getAuthenticatedUser(req);
   if (!isDbConfigured) {
-    res.json(fallbackStore.slice(0, 20).map(toResponse));
+    const list = user
+      ? fallbackStore.filter((g) => g.userId === user.id || g.userId == null)
+      : fallbackStore;
+    res.json(list.slice(0, 20).map(toResponse));
     return;
   }
 
   try {
-    const gens = await db
-      .select()
-      .from(generationsTable)
-      .orderBy(desc(generationsTable.createdAt))
-      .limit(20);
+    const gens = user
+      ? await db
+          .select()
+          .from(generationsTable)
+          .where(eq(generationsTable.userId, user.id))
+          .orderBy(desc(generationsTable.createdAt))
+          .limit(20)
+      : await db
+          .select()
+          .from(generationsTable)
+          .orderBy(desc(generationsTable.createdAt))
+          .limit(20);
 
     res.json(gens.map(toResponse));
   } catch (err) {
@@ -289,10 +317,17 @@ router.delete("/generations/:id", async (req, res): Promise<void> => {
     return;
   }
 
+  const user = getAuthenticatedUser(req);
+
   if (!isDbConfigured) {
     const idx = fallbackStore.findIndex((g) => g.id === params.data.id);
     if (idx === -1) {
       res.status(404).json({ error: "Generation not found" });
+      return;
+    }
+    const target = fallbackStore[idx];
+    if (target.userId != null && (!user || target.userId !== user.id)) {
+      res.status(403).json({ error: "Forbidden: You cannot delete another user's generation" });
       return;
     }
     fallbackStore.splice(idx, 1);
@@ -301,15 +336,24 @@ router.delete("/generations/:id", async (req, res): Promise<void> => {
   }
 
   try {
-    const [deleted] = await db
-      .delete(generationsTable)
-      .where(eq(generationsTable.id, params.data.id))
-      .returning();
+    const [existing] = await db
+      .select({ id: generationsTable.id, userId: generationsTable.userId })
+      .from(generationsTable)
+      .where(eq(generationsTable.id, params.data.id));
 
-    if (!deleted) {
+    if (!existing) {
       res.status(404).json({ error: "Generation not found" });
       return;
     }
+
+    if (existing.userId != null && (!user || existing.userId !== user.id)) {
+      res.status(403).json({ error: "Forbidden: You cannot delete another user's generation" });
+      return;
+    }
+
+    await db
+      .delete(generationsTable)
+      .where(eq(generationsTable.id, params.data.id));
 
     res.sendStatus(204);
   } catch (err) {
